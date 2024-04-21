@@ -7,8 +7,38 @@
 #include <Python.h>
 #include <stdio.h>
 #include <stddef.h> // for offsetof()
-#include <structmember.h> // for PyMemberDef (COMPAT: Not required in future versions)
+#include <structmember.h> // for PyMemberDef (COMPAT: Not required in future versions
+                          // however, it in later versions, it does provide the
+                          // T_OBJECT_EX, that are used below for maximum
+                          // compatibility)
 /*
+ * WHAT IS A PYTHON C EXTENSION MODULE
+ *
+ * A Python C extension module is a .so file that exports a function
+ *
+ *      PyObject *PyInit_<modulename>(void);
+ *
+ * that is expected to return a valid Python module or NULL indicating failure.
+ *
+ * When we run
+ *
+ *      >>> import <modulename>
+ *
+ * Python searches in `sys.path` and `PYTHONPATH` for
+ * - A file named <modulename>.py
+ * - A directory named <modulename> that contains a __init__.py file (i.e. a
+ *   package)
+ * - A file named <modulename>.so (can also be something like
+ *   <modulename>.cpython-38-x86_64-linux-gnu.so).
+ *
+ * If what it finds is a `.so` file, then it uses `dlopen()` to load that shared
+ * library then uses `dlsym()` to load the function PyInit_<modulename> (Try
+ * changing the name of PyInit_mymodule and attempting the import).
+ *
+ * Besides defining this function, the code in this file defines a class,
+ * attaches functions to it as methods, defines a module and attaches the class
+ * to it.
+ *
  * PYTHON FUNCTIONS IN C
  *
  * Module level functions in C have the signature
@@ -97,6 +127,11 @@
  * tells us that our str method works.
  * >>> print(p.name())
  * tells us that our custom method works.
+ *
+ * PACKAGES
+ *
+ * The compiled C extension module can be part of a package allowing for a
+ * package to be made up of C extension modules and Python modules.
  */
 
 struct Person {
@@ -104,6 +139,7 @@ struct Person {
     PyObject *first_name;
     PyObject *last_name;
     int number;
+    char * x;
 };
 
 static void Person_dealloc(struct Person *self)
@@ -151,17 +187,16 @@ static int Person_init(struct Person *self, PyObject *args, PyObject *kwds)
     }
 
     if(first_name != NULL){
-#if PY_MINOR_VERSION < 11
-        // COMPAT: Replace this whole block with
-        // Py_XSETREF(self->first_name, Py_NewRef(first_name));
-        // which is a macro that basically does what these lines do
+        /*
+         * Compat: For newer versions of Python, the tutorial says to do
+         * `Py_XSETREF(self->first_name, Py_NewRef(first_name));`
+         * which does exactly what the code below does.  For maximum compatibility
+         * we should probably stick with this.
+         */
         PyObject *tmp = self->first_name;
         Py_INCREF(first_name);
         self->first_name = first_name;
         Py_XDECREF(tmp);
-#else
-        Py_XSETREF(self->first_name, Py_NewRef(first_name));
-#endif
     }
 
     if(last_name != NULL){
@@ -179,6 +214,12 @@ static PyObject *Person_str(struct Person *self, PyObject *Py_UNUSED(ignored))
     return PyUnicode_FromFormat("Person(first_name=%S, last_name=%S, number=%d)", self->first_name, self->last_name, self->number);
 }
 
+/*
+ * Compat: The T_OBJECT_EX macros are replaced by Py_T_OBJECT_EX in later
+ * versions of Python.  The later versions do have, for backward compatibility
+ * `#define T_OBJECT_EX Py_T_OBJECT_EX` so I think using the T_OBJECT_EX
+ * allows this code to compile for any relevant version.
+ */
 static PyMemberDef Person_members[] = {
     {
         .name = "first_name",
@@ -231,6 +272,9 @@ static PyMethodDef Person_methods[] = {
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+// In the limited API, PyTypeObject is an opaque type.  Therefore, we would
+// create it by defining a PyTypeSpec instead and pass that to PyType_FromSpec()
+// which returns a PyObject* (which really is a PyTypeObject*).
 static PyTypeObject PersonType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "mymodule.Person",
@@ -246,6 +290,9 @@ static PyTypeObject PersonType = {
     .tp_methods = Person_methods,
 };
 
+// Passed to PyModule_Create() to create the actual module
+// The class will be added to the module subsequently using
+// PyModule_AddObject()
 static PyModuleDef mymodulemodule = {
     PyModuleDef_HEAD_INIT,
     .m_name = "mymodule",
